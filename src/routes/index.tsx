@@ -6,13 +6,6 @@ import { analyzeScript, renderImage, renderBatch } from "@/lib/manga.functions";
 import { buildTimeline, fmt, parseScript, scriptEndTime, type Segment } from "@/lib/script";
 import { buildVideo, webCodecsSupported } from "@/lib/video";
 import { isBlankImageUrl } from "@/lib/blank";
-import {
-  reserveImageSlot,
-  noteImageLimited,
-  noteImageOk,
-  limitHintMs,
-  isRateLimitMessage,
-} from "@/lib/image-rate";
 import { loadRun, saveRun, type SavedRun } from "@/lib/progress";
 import { recoverInterruptedShots } from "@/lib/run-recovery";
 
@@ -120,16 +113,23 @@ const PROMPT_RANGE = 15;
 
 /**
  * Image pipeline shape: ONE Agnes AI key, one model (agnes-image-2.5-flash).
- * The free tier allows 20 requests per minute, and the server owns that budget
- * (src/lib/keys.server.ts), so a few client lanes simply keep the queue fed
- * without ever racing past the limit.
+ *
+ * SINGLE ENVIRONMENT: the page never runs parallel server calls, because in
+ * production each call can land in a different isolated worker with its own
+ * in-memory limiter — that is what produced phantom rate limits and long
+ * stalls. Instead ONE request at a time carries a whole group of panels, and
+ * those panels are rendered side by side inside that one environment, where a
+ * single limiter sees every request. Same speed, one source of truth.
  */
-// Production can run each server call in a different isolated worker, so its
-// in-memory limiter cannot coordinate browser lanes. Start one panel every
-// 3.25s here as the account-wide source of truth (18.46/min, below Agnes' 20).
-// Four lanes still overlap the slow upstream renders without sending a burst.
-const IMAGE_CONCURRENCY = 4;
-const IMAGE_BATCH = 1;
+const IMAGE_CONCURRENCY = 1;
+/** Panels rendered together, in parallel, inside one server environment. */
+const IMAGE_BATCH = 8;
+
+/** True when a failure message is provider capacity pressure, not a bad panel. */
+function isRateLimitMessage(msg: string): boolean {
+  return /\b429\b|rate.?limit|too many requests|quota|1015/i.test(msg);
+}
+
 
 /**
  * The server already downloads and validates every finished image (complete
@@ -286,7 +286,7 @@ function useSwallowCancellations() {
  * instance that went away mid-flight), so the lane drops it and redraws that
  * panel somewhere else instead of waiting out a silent connection.
  */
-const IMAGE_REQUEST_DEADLINE_MS = 150_000;
+const IMAGE_REQUEST_DEADLINE_MS = 300_000;
 
 
 async function getPrompts(input: PromptRequest): Promise<{ prompts: string[] }> {
@@ -890,9 +890,9 @@ function Index() {
           promptingDone = true;
         });
 
-      // Pacing lives in src/lib/image-rate.ts: one adaptive, cross-tab budget
-      // shared by every image request this account makes.
-      const reserveImageStart = () => reserveImageSlot(() => cancelRef.current);
+      // Pacing lives entirely on the server (src/lib/keys.server.ts): one
+      // request at a time means one environment, one limiter, no guessing.
+
 
       // Jobs currently in flight. A worker must NOT exit while another worker
       // is still rendering, because that worker can push a failed panel back
@@ -933,7 +933,6 @@ function Index() {
            */
           const requeue = (g: Job, msg: string) => {
             const limited = isRateLimitMessage(msg);
-            if (limited) noteImageLimited(limitHintMs(msg));
             const nextAttempts = limited ? g.attempts : g.attempts + 1;
             if (nextAttempts < MAX_IMAGE_ATTEMPTS && !cancelRef.current) {
               // Provider capacity is not a bad panel attempt. Keep it queued
@@ -949,7 +948,6 @@ function Index() {
             `[client] worker ${me} drawing panels ${group.map((g) => g.seg.index + 1).join(",")} · queue=${queue.length}`,
           );
           try {
-            await reserveImageStart();
             const { results } = await killable((signal) =>
               drawBatch({
                 data: {
@@ -978,13 +976,11 @@ function Index() {
                   let url: string | null = r.url;
                   // the review pass may have rewritten the prompt server-side
                   const prompt = r.prompt ?? job?.prompt ?? "";
-                  noteImageOk();
                   for (let attempt = 1; attempt <= 2; attempt++) {
                     if (!url || !CLIENT_BLANK_CHECK || !(await isBlankImageUrl(url))) break;
                     url = null;
                     if (!prompt) break;
                     try {
-                      await reserveImageStart();
                       const res = await killable((signal) =>
                         draw({
                           data: {

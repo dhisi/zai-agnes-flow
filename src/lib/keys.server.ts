@@ -29,6 +29,7 @@ const SPACING_MS = 200;
 export const PER_KEY_CONCURRENCY = 8;
 
 
+
 export function agnesKey(): string {
   const key = process.env["AGNES_API_KEY"]?.trim();
   if (!key) throw new Error("Missing AGNES_API_KEY (Agnes AI image key)");
@@ -109,14 +110,13 @@ function waitFor(now: number): number {
 }
 
 /**
- * Longest a single server call may sit in this gate. The browser scheduler
- * (src/lib/image-rate.ts) owns the account-wide pace; this in-isolate gate is
- * only a safety net, so instead of parking a request for minutes it gives up
- * quickly and reports capacity pressure. The page then re-queues the panel
- * without spending one of its render attempts — which is why a busy minute no
- * longer turns into a 15-minute dead screen.
+ * Longest a single server call may sit in this gate. The page now sends ONE
+ * request at a time carrying a whole group of panels, so this gate is the only
+ * pace-keeper and it should queue rather than fail: a panel waits its turn
+ * inside the same environment instead of bouncing back to the browser.
  */
-const MAX_GATE_WAIT_MS = 10_000;
+
+const MAX_GATE_WAIT_MS = 90_000;
 
 /**
  * Leases a rate-limit slot for the duration of `fn` and hands it the API key.
@@ -135,7 +135,7 @@ export async function withImageKey<T>(
     const wait = waitFor(Date.now());
     if (wait <= 0) break;
     if (Date.now() + wait > deadline) {
-      throw new Error("429 rate limited, waiting 10s (local pacing gate)");
+      throw new Error("429 rate limited, waiting 90s (local pacing gate)");
     }
     await sleep(Math.min(wait, 500));
   }
