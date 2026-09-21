@@ -217,6 +217,13 @@ function stamp(): { runAt?: number } {
  * click hangs up on the server too — the API keys are dropped mid-job instead
  * of finishing work nobody is waiting for.
  */
+class RequestTimeout extends Error {
+  constructor(message = "render request timed out — retrying") {
+    super(message);
+    this.name = "RequestTimeout";
+  }
+}
+
 async function killable<T>(
   run: (signal: AbortSignal) => Promise<T>,
   /** Hard deadline: a request that never answers is dropped and retried. */
@@ -224,16 +231,26 @@ async function killable<T>(
 ): Promise<T> {
   const controller = new AbortController();
   const untrack = trackRequest(controller);
+  let timedOut = false;
   const timer = timeoutMs
-    ? window.setTimeout(() => controller.abort("request timed out"), timeoutMs)
+    ? window.setTimeout(() => {
+        timedOut = true;
+        controller.abort("request timed out");
+      }, timeoutMs)
     : undefined;
   try {
     return await run(controller.signal);
+  } catch (e) {
+    // A deadline is NOT a cancellation: one server instance that never answers
+    // must cost this panel a retry, not freeze the whole run.
+    if (timedOut) throw new RequestTimeout();
+    throw e;
   } finally {
     if (timer) window.clearTimeout(timer);
     untrack();
   }
 }
+
 
 /**
  * Insta Kill (and a superseded run, a closed tab, a timed-out request) is a
