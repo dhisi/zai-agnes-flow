@@ -110,13 +110,12 @@ function waitFor(now: number): number {
 }
 
 /**
- * Longest a single server call may sit in this gate. The browser scheduler
- * (src/lib/image-rate.ts) owns the account-wide pace; this in-isolate gate is
- * only a safety net, so instead of parking a request for minutes it gives up
- * quickly and reports capacity pressure. The page then re-queues the panel
- * without spending one of its render attempts — which is why a busy minute no
- * longer turns into a 15-minute dead screen.
+ * Longest a single server call may sit in this gate. The page now sends ONE
+ * request at a time carrying a whole group of panels, so this gate is the only
+ * pace-keeper and it should queue rather than fail: a panel waits its turn
+ * inside the same environment instead of bouncing back to the browser.
  */
+
 const MAX_GATE_WAIT_MS = 90_000;
 
 /**
