@@ -217,6 +217,13 @@ function stamp(): { runAt?: number } {
  * click hangs up on the server too — the API keys are dropped mid-job instead
  * of finishing work nobody is waiting for.
  */
+class RequestTimeout extends Error {
+  constructor(message = "render request timed out — retrying") {
+    super(message);
+    this.name = "RequestTimeout";
+  }
+}
+
 async function killable<T>(
   run: (signal: AbortSignal) => Promise<T>,
   /** Hard deadline: a request that never answers is dropped and retried. */
@@ -224,31 +231,39 @@ async function killable<T>(
 ): Promise<T> {
   const controller = new AbortController();
   const untrack = trackRequest(controller);
+  let timedOut = false;
   const timer = timeoutMs
-    ? window.setTimeout(() => controller.abort("request timed out"), timeoutMs)
+    ? window.setTimeout(() => {
+        timedOut = true;
+        controller.abort("request timed out");
+      }, timeoutMs)
     : undefined;
   try {
     return await run(controller.signal);
+  } catch (e) {
+    // A deadline is NOT a cancellation: one server instance that never answers
+    // must cost this panel a retry, not freeze the whole run.
+    if (timedOut) throw new RequestTimeout();
+    throw e;
   } finally {
     if (timer) window.clearTimeout(timer);
     untrack();
   }
 }
 
+
 /**
- * Insta Kill (and a superseded run, a closed tab, a timed-out request) is a
- * deliberate cancellation, never a crash. Anything that recognises this shape
- * must stop quietly: showing it as an error — or letting it escape as an
- * unhandled rejection — is what blanked the page mid-run.
+ * Insta Kill (a superseded run, a closed tab) is a deliberate cancellation,
+ * never a crash. A DEADLINE is deliberately NOT in here: a server instance that
+ * stops answering must cost one panel a retry, not stop the whole run.
  */
 function isCancellation(e: unknown): boolean {
   const err = e as { name?: string; message?: string } | null;
   if (!err) return false;
+  if (err.name === "RequestTimeout") return false;
   if (err.name === "AbortError" || err.name === "KilledError") return true;
   const msg = typeof err.message === "string" ? err.message : String(e);
-  return /insta kill|killederror|cancell?ed|aborted|the operation was aborted|request timed out/i.test(
-    msg,
-  );
+  return /insta kill|killederror|cancell?ed|aborted|the operation was aborted/i.test(msg);
 }
 
 /**
@@ -267,10 +282,12 @@ function useSwallowCancellations() {
 }
 
 /**
- * Practically no ceiling: a drawing round trip is left alone until it answers.
- * The old eight-minute cut-off was throwing away healthy renders.
+ * A render answers in seconds. Anything past this is a dead request (a server
+ * instance that went away mid-flight), so the lane drops it and redraws that
+ * panel somewhere else instead of waiting out a silent connection.
  */
-const IMAGE_REQUEST_DEADLINE_MS = 6 * 60 * 60_000;
+const IMAGE_REQUEST_DEADLINE_MS = 150_000;
+
 
 async function getPrompts(input: PromptRequest): Promise<{ prompts: string[] }> {
   const label = `${input.from}-${input.to}`;
@@ -279,14 +296,21 @@ async function getPrompts(input: PromptRequest): Promise<{ prompts: string[] }> 
   console.log(`[client] prompts request ${label} started`);
   const controller = new AbortController();
   const untrack = trackRequest(controller);
-  // No idle timer and no batch deadline: the stream is only ever stopped by the
-  // server finishing, a real failure, or Insta Kill.
-  const idleTimer = 0;
-  const activity = () => {};
+  // The writer heartbeats every 10s. Sixty seconds of complete silence means
+  // the instance handling this range is gone, so the stream is dropped and the
+  // range asked again instead of the page waiting forever on a dead socket.
+  const IDLE_MS = 60_000;
+  let idleTimer = window.setTimeout(() => controller.abort("prompt stream idle"), IDLE_MS);
+  const activity = () => {
+    window.clearTimeout(idleTimer);
+    idleTimer = window.setTimeout(() => controller.abort("prompt stream idle"), IDLE_MS);
+  };
+
   let cleaned = false;
   const cleanup = () => {
     if (cleaned) return;
     cleaned = true;
+    window.clearTimeout(idleTimer);
     untrack();
   };
   try {
@@ -715,7 +739,7 @@ function Index() {
           if (attempt > 0) {
             const why = lastErr instanceof Error ? lastErr.message : "";
             const limited = /rate limit|busy|1015|429|too many|overload/i.test(why);
-            const wait = limited ? Math.min(180_000, 45_000 * attempt) : 3_000 * attempt;
+            const wait = limited ? Math.min(45_000, 10_000 * attempt) : 2_000 * attempt;
             setNote(
               `${limited ? `Writer is busy — waiting ${Math.round(wait / 1000)}s` : "Retrying"} — ${label} (try ${attempt + 1})`,
             );
