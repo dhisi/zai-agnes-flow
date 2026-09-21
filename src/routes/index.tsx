@@ -6,13 +6,6 @@ import { analyzeScript, renderImage, renderBatch } from "@/lib/manga.functions";
 import { buildTimeline, fmt, parseScript, scriptEndTime, type Segment } from "@/lib/script";
 import { buildVideo, webCodecsSupported } from "@/lib/video";
 import { isBlankImageUrl } from "@/lib/blank";
-import {
-  reserveImageSlot,
-  noteImageLimited,
-  noteImageOk,
-  limitHintMs,
-  isRateLimitMessage,
-} from "@/lib/image-rate";
 import { loadRun, saveRun, type SavedRun } from "@/lib/progress";
 import { recoverInterruptedShots } from "@/lib/run-recovery";
 
@@ -120,16 +113,23 @@ const PROMPT_RANGE = 15;
 
 /**
  * Image pipeline shape: ONE Agnes AI key, one model (agnes-image-2.5-flash).
- * The free tier allows 20 requests per minute, and the server owns that budget
- * (src/lib/keys.server.ts), so a few client lanes simply keep the queue fed
- * without ever racing past the limit.
+ *
+ * SINGLE ENVIRONMENT: the page never runs parallel server calls, because in
+ * production each call can land in a different isolated worker with its own
+ * in-memory limiter — that is what produced phantom rate limits and long
+ * stalls. Instead ONE request at a time carries a whole group of panels, and
+ * those panels are rendered side by side inside that one environment, where a
+ * single limiter sees every request. Same speed, one source of truth.
  */
-// Production can run each server call in a different isolated worker, so its
-// in-memory limiter cannot coordinate browser lanes. Start one panel every
-// 3.25s here as the account-wide source of truth (18.46/min, below Agnes' 20).
-// Four lanes still overlap the slow upstream renders without sending a burst.
-const IMAGE_CONCURRENCY = 4;
-const IMAGE_BATCH = 1;
+const IMAGE_CONCURRENCY = 1;
+/** Panels rendered together, in parallel, inside one server environment. */
+const IMAGE_BATCH = 8;
+
+/** True when a failure message is provider capacity pressure, not a bad panel. */
+function isRateLimitMessage(msg: string): boolean {
+  return /\b429\b|rate.?limit|too many requests|quota|1015/i.test(msg);
+}
+
 
 /**
  * The server already downloads and validates every finished image (complete
