@@ -286,7 +286,7 @@ function useSwallowCancellations() {
  * instance that went away mid-flight), so the lane drops it and redraws that
  * panel somewhere else instead of waiting out a silent connection.
  */
-const IMAGE_REQUEST_DEADLINE_MS = 150_000;
+const IMAGE_REQUEST_DEADLINE_MS = 300_000;
 
 
 async function getPrompts(input: PromptRequest): Promise<{ prompts: string[] }> {
@@ -890,9 +890,9 @@ function Index() {
           promptingDone = true;
         });
 
-      // Pacing lives in src/lib/image-rate.ts: one adaptive, cross-tab budget
-      // shared by every image request this account makes.
-      const reserveImageStart = () => reserveImageSlot(() => cancelRef.current);
+      // Pacing lives entirely on the server (src/lib/keys.server.ts): one
+      // request at a time means one environment, one limiter, no guessing.
+
 
       // Jobs currently in flight. A worker must NOT exit while another worker
       // is still rendering, because that worker can push a failed panel back
@@ -933,7 +933,6 @@ function Index() {
            */
           const requeue = (g: Job, msg: string) => {
             const limited = isRateLimitMessage(msg);
-            if (limited) noteImageLimited(limitHintMs(msg));
             const nextAttempts = limited ? g.attempts : g.attempts + 1;
             if (nextAttempts < MAX_IMAGE_ATTEMPTS && !cancelRef.current) {
               // Provider capacity is not a bad panel attempt. Keep it queued
@@ -949,7 +948,6 @@ function Index() {
             `[client] worker ${me} drawing panels ${group.map((g) => g.seg.index + 1).join(",")} · queue=${queue.length}`,
           );
           try {
-            await reserveImageStart();
             const { results } = await killable((signal) =>
               drawBatch({
                 data: {
@@ -978,13 +976,11 @@ function Index() {
                   let url: string | null = r.url;
                   // the review pass may have rewritten the prompt server-side
                   const prompt = r.prompt ?? job?.prompt ?? "";
-                  noteImageOk();
                   for (let attempt = 1; attempt <= 2; attempt++) {
                     if (!url || !CLIENT_BLANK_CHECK || !(await isBlankImageUrl(url))) break;
                     url = null;
                     if (!prompt) break;
                     try {
-                      await reserveImageStart();
                       const res = await killable((signal) =>
                         draw({
                           data: {
