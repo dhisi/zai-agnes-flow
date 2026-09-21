@@ -109,6 +109,16 @@ function waitFor(now: number): number {
 }
 
 /**
+ * Longest a single server call may sit in this gate. The browser scheduler
+ * (src/lib/image-rate.ts) owns the account-wide pace; this in-isolate gate is
+ * only a safety net, so instead of parking a request for minutes it gives up
+ * quickly and reports capacity pressure. The page then re-queues the panel
+ * without spending one of its render attempts — which is why a busy minute no
+ * longer turns into a 15-minute dead screen.
+ */
+const MAX_GATE_WAIT_MS = 10_000;
+
+/**
  * Leases a rate-limit slot for the duration of `fn` and hands it the API key.
  * Keeps the historical signature (`slot`, `attempt`) so callers are unchanged;
  * with a single key those only matter for logging.
@@ -119,11 +129,15 @@ export async function withImageKey<T>(
   fn: (key: string, keyIndex: number) => Promise<T>,
 ): Promise<T> {
   const key = agnesKey();
-  // Wait for a free slot inside the 20 RPM budget.
+  const deadline = Date.now() + MAX_GATE_WAIT_MS;
+  // Wait for a free slot inside the per-minute budget, but never indefinitely.
   for (;;) {
     const wait = waitFor(Date.now());
     if (wait <= 0) break;
-    await sleep(Math.min(wait, 1_000));
+    if (Date.now() + wait > deadline) {
+      throw new Error("429 rate limited, waiting 10s (local pacing gate)");
+    }
+    await sleep(Math.min(wait, 500));
   }
   const now = Date.now();
   lastStart = now;
@@ -135,3 +149,4 @@ export async function withImageKey<T>(
     inFlight--;
   }
 }
+
