@@ -310,6 +310,7 @@ async function getPrompts(input: PromptRequest): Promise<{ prompts: string[] }> 
   const cleanup = () => {
     if (cleaned) return;
     cleaned = true;
+    window.clearTimeout(idleTimer);
     untrack();
   };
   try {
@@ -738,7 +739,7 @@ function Index() {
           if (attempt > 0) {
             const why = lastErr instanceof Error ? lastErr.message : "";
             const limited = /rate limit|busy|1015|429|too many|overload/i.test(why);
-            const wait = limited ? Math.min(180_000, 45_000 * attempt) : 3_000 * attempt;
+            const wait = limited ? Math.min(45_000, 10_000 * attempt) : 2_000 * attempt;
             setNote(
               `${limited ? `Writer is busy — waiting ${Math.round(wait / 1000)}s` : "Retrying"} — ${label} (try ${attempt + 1})`,
             );
