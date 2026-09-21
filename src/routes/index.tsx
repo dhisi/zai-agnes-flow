@@ -130,7 +130,6 @@ const PROMPT_RANGE = 15;
 // Four lanes still overlap the slow upstream renders without sending a burst.
 const IMAGE_CONCURRENCY = 4;
 const IMAGE_BATCH = 1;
-const IMAGE_START_SPACING_MS = 3_250;
 
 /**
  * The server already downloads and validates every finished image (complete
