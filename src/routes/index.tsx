@@ -860,19 +860,10 @@ function Index() {
           promptingDone = true;
         });
 
-      // Adaptive throttle: back off globally when the provider rate-limits.
-      let cooldownUntil = 0;
-      let nextImageStart = 0;
-      let imageStartLock = Promise.resolve();
-      const reserveImageStart = async () => {
-        const turn = imageStartLock.then(async () => {
-          const wait = Math.max(cooldownUntil, nextImageStart) - Date.now();
-          if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-          nextImageStart = Date.now() + IMAGE_START_SPACING_MS;
-        });
-        imageStartLock = turn.catch(() => undefined);
-        await turn;
-      };
+      // Pacing lives in src/lib/image-rate.ts: one adaptive, cross-tab budget
+      // shared by every image request this account makes.
+      const reserveImageStart = () => reserveImageSlot(() => cancelRef.current);
+
       // Jobs currently in flight. A worker must NOT exit while another worker
       // is still rendering, because that worker can push a failed panel back
       // onto the queue — with everyone already gone, the automatic retry
@@ -901,8 +892,6 @@ function Index() {
             await new Promise((r) => setTimeout(r, 150));
             continue;
           }
-          const wait = cooldownUntil - Date.now();
-          if (wait > 0) await new Promise((r) => setTimeout(r, wait));
 
           inFlight++;
           group.forEach((g) => record(g.seg.index, { status: "drawing" }));
@@ -913,8 +902,8 @@ function Index() {
            * after MAX_IMAGE_ATTEMPTS tries is the panel marked failed.
            */
           const requeue = (g: Job, msg: string) => {
-            const limited = /429|rate|quota|1015|too many/i.test(msg);
-            if (limited) cooldownUntil = Math.max(cooldownUntil, Date.now() + 5000);
+            const limited = isRateLimitMessage(msg);
+            if (limited) noteImageLimited(limitHintMs(msg));
             const nextAttempts = limited ? g.attempts : g.attempts + 1;
             if (nextAttempts < MAX_IMAGE_ATTEMPTS && !cancelRef.current) {
               // Provider capacity is not a bad panel attempt. Keep it queued
@@ -959,11 +948,13 @@ function Index() {
                   let url: string | null = r.url;
                   // the review pass may have rewritten the prompt server-side
                   const prompt = r.prompt ?? job?.prompt ?? "";
+                  noteImageOk();
                   for (let attempt = 1; attempt <= 2; attempt++) {
                     if (!url || !CLIENT_BLANK_CHECK || !(await isBlankImageUrl(url))) break;
                     url = null;
                     if (!prompt) break;
                     try {
+                      await reserveImageStart();
                       const res = await killable((signal) =>
                         draw({
                           data: {
