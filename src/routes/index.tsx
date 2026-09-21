@@ -296,10 +296,16 @@ async function getPrompts(input: PromptRequest): Promise<{ prompts: string[] }> 
   console.log(`[client] prompts request ${label} started`);
   const controller = new AbortController();
   const untrack = trackRequest(controller);
-  // No idle timer and no batch deadline: the stream is only ever stopped by the
-  // server finishing, a real failure, or Insta Kill.
-  const idleTimer = 0;
-  const activity = () => {};
+  // The writer heartbeats every 10s. Sixty seconds of complete silence means
+  // the instance handling this range is gone, so the stream is dropped and the
+  // range asked again instead of the page waiting forever on a dead socket.
+  const IDLE_MS = 60_000;
+  let idleTimer = window.setTimeout(() => controller.abort("prompt stream idle"), IDLE_MS);
+  const activity = () => {
+    window.clearTimeout(idleTimer);
+    idleTimer = window.setTimeout(() => controller.abort("prompt stream idle"), IDLE_MS);
+  };
+
   let cleaned = false;
   const cleanup = () => {
     if (cleaned) return;
