@@ -12,10 +12,10 @@ import { assertActive, killableSignal, KilledError } from "./kill-switch.server"
 /** The ONLY image provider and model in this app. */
 const AGNES_URL = "https://apihub.agnes-ai.com/v1/images/generations";
 const AGNES_IMAGE_MODEL = "agnes-image-2.5-flash";
-// Generation can legitimately take minutes when the renderer is busy. A short
-// deadline used to kill healthy renders at 60s and made long runs look stuck,
-// so this is only a very generous safety net, never a fast-fail.
-const IMAGE_REQUEST_TIMEOUT_MS = 1_800_000;
+// A flash render answers in seconds. A request still open after two minutes is
+// a dead connection, not a slow drawing, and holding it open is what made lanes
+// look frozen for many minutes at a time.
+const IMAGE_REQUEST_TIMEOUT_MS = 120_000;
 
 /**
  * Renderer-only art direction. The writing model describes only scene content;

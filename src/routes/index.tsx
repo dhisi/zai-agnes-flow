@@ -253,19 +253,17 @@ async function killable<T>(
 
 
 /**
- * Insta Kill (and a superseded run, a closed tab, a timed-out request) is a
- * deliberate cancellation, never a crash. Anything that recognises this shape
- * must stop quietly: showing it as an error — or letting it escape as an
- * unhandled rejection — is what blanked the page mid-run.
+ * Insta Kill (a superseded run, a closed tab) is a deliberate cancellation,
+ * never a crash. A DEADLINE is deliberately NOT in here: a server instance that
+ * stops answering must cost one panel a retry, not stop the whole run.
  */
 function isCancellation(e: unknown): boolean {
   const err = e as { name?: string; message?: string } | null;
   if (!err) return false;
+  if (err.name === "RequestTimeout") return false;
   if (err.name === "AbortError" || err.name === "KilledError") return true;
   const msg = typeof err.message === "string" ? err.message : String(e);
-  return /insta kill|killederror|cancell?ed|aborted|the operation was aborted|request timed out/i.test(
-    msg,
-  );
+  return /insta kill|killederror|cancell?ed|aborted|the operation was aborted/i.test(msg);
 }
 
 /**
@@ -284,10 +282,12 @@ function useSwallowCancellations() {
 }
 
 /**
- * Practically no ceiling: a drawing round trip is left alone until it answers.
- * The old eight-minute cut-off was throwing away healthy renders.
+ * A render answers in seconds. Anything past this is a dead request (a server
+ * instance that went away mid-flight), so the lane drops it and redraws that
+ * panel somewhere else instead of waiting out a silent connection.
  */
-const IMAGE_REQUEST_DEADLINE_MS = 6 * 60 * 60_000;
+const IMAGE_REQUEST_DEADLINE_MS = 150_000;
+
 
 async function getPrompts(input: PromptRequest): Promise<{ prompts: string[] }> {
   const label = `${input.from}-${input.to}`;
