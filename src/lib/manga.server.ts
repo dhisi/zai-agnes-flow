@@ -2302,6 +2302,9 @@ export async function generateImage(
             );
             throttled = true;
             lastErr = `${res.status} rate limited, waiting ${Math.round(waitMs / 1000)}s`;
+            console.warn(
+              `[agnes] limit body: ${errorBody.slice(0, 300)} · retry-after=${retryAfterHeader ?? "none"}`,
+            );
           } else {
             lastErr = `${res.status} ${errorBody}`.slice(0, 300);
           }
